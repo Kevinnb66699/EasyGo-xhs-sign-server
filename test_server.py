@@ -34,6 +34,34 @@ def test_health(base_url):
         print(f"❌ 请求失败: {e}")
         return False
 
+def test_a1(base_url):
+    """测试获取 a1 值接口（新增）"""
+    print("\n" + "=" * 60)
+    print("测试 1.5: 获取 a1 值")
+    print("=" * 60)
+    
+    try:
+        url = f"{base_url}/a1"
+        print(f"请求: GET {url}")
+        
+        response = requests.get(url, timeout=10)
+        print(f"状态码: {response.status_code}")
+        result = response.json()
+        print(f"响应: {json.dumps(result, indent=2, ensure_ascii=False)}")
+        
+        if response.status_code == 200 and result.get('a1'):
+            a1_value = result['a1']
+            print(f"✅ a1 值获取成功: {a1_value[:20]}...")
+            print(f"提示: 请确保您的 cookie 中的 a1 与此值一致")
+            return True, a1_value
+        else:
+            print("⚠️ a1 值为空")
+            return True, None
+            
+    except Exception as e:
+        print(f"❌ 请求失败: {e}")
+        return False, None
+
 def test_sign(base_url):
     """测试签名生成接口"""
     print("\n" + "=" * 60)
@@ -122,6 +150,11 @@ def main():
     results = []
     results.append(("API 信息", test_root(base_url)))
     results.append(("健康检查", test_health(base_url)))
+    
+    # 获取 a1 值
+    a1_test_passed, a1_value = test_a1(base_url)
+    results.append(("获取 a1 值", a1_test_passed))
+    
     results.append(("签名生成", test_sign(base_url)))
     
     # 汇总结果
