@@ -23,31 +23,36 @@ app = Flask(__name__)
 playwright_instance = None
 browser_context = None
 context_page = None
+page_ready = False  # 标记页面是否已加载小红书网站
+last_page_load_time = 0  # 上次加载时间
 
 def init_browser():
     """初始化浏览器环境"""
-    global playwright_instance, browser_context, context_page
+    global playwright_instance, browser_context, context_page, page_ready
     
     try:
         logger.info("正在初始化 Playwright 浏览器...")
         playwright_instance = sync_playwright().start()
         chromium = playwright_instance.chromium
         
-        # 启动浏览器
+        # 启动浏览器 - 添加更多性能优化参数
         browser = chromium.launch(
             headless=True,
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-gpu'
+                '--disable-gpu',
+                '--disable-web-security',  # 禁用同源策略
+                '--disable-features=IsolateOrigins,site-per-process',  # 禁用站点隔离
+                '--blink-settings=imagesEnabled=false',  # 禁用图片加载，加快速度
             ]
         )
         
         # 创建浏览器上下文
         browser_context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         
         # 加载反检测脚本
@@ -63,6 +68,25 @@ def init_browser():
         
         # 创建页面
         context_page = browser_context.new_page()
+        
+        # 启动时预加载小红书网站
+        try:
+            logger.info("预加载小红书网站...")
+            context_page.goto(
+                "https://www.xiaohongshu.com", 
+                timeout=30000,
+                wait_until="domcontentloaded"
+            )
+            context_page.wait_for_function(
+                "typeof window._webmsxyw === 'function'",
+                timeout=5000
+            )
+            page_ready = True
+            logger.info("✅ 小红书网站预加载成功")
+        except Exception as e:
+            logger.warning(f"⚠️ 预加载失败: {e}，将在首次请求时加载")
+            page_ready = False
+        
         logger.info("✅ 浏览器初始化完成")
         
     except Exception as e:
@@ -108,13 +132,16 @@ def index():
 @app.route('/health', methods=['GET'])
 def health():
     """健康检查端点"""
+    global page_ready, last_page_load_time
     browser_ready = context_page is not None
     
     return jsonify({
-        'status': 'healthy' if browser_ready else 'initializing',
+        'status': 'healthy' if (browser_ready and page_ready) else 'initializing',
         'browser_ready': browser_ready,
+        'page_ready': page_ready,
+        'last_page_load': last_page_load_time,
         'timestamp': time.time()
-    }), 200 if browser_ready else 503
+    }), 200 if (browser_ready and page_ready) else 503
 
 @app.route('/sign', methods=['POST'])
 def sign():
@@ -135,7 +162,7 @@ def sign():
         "x-t": "时间戳"
     }
     """
-    global browser_context, context_page
+    global browser_context, context_page, page_ready, last_page_load_time
     
     try:
         # 获取请求数据
@@ -161,15 +188,58 @@ def sign():
         
         logger.info(f"收到签名请求 - URI: {uri}, 数据长度: {len(str(request_data)) if request_data else 0}")
         
-        # 访问小红书网站
-        try:
-            context_page.goto("https://www.xiaohongshu.com", timeout=10000)
-        except Exception as e:
-            logger.error(f"访问小红书网站失败: {e}")
-            return jsonify({
-                'error': f'Failed to access xiaohongshu.com: {str(e)}',
-                'success': False
-            }), 500
+        # 检查页面是否需要刷新 (每5分钟刷新一次或页面未就绪)
+        current_time = time.time()
+        needs_refresh = (not page_ready) or (current_time - last_page_load_time > 300)
+        
+        if needs_refresh:
+            # 访问小红书网站 - 使用重试机制
+            max_retries = 3
+            retry_delay = 2
+            page_loaded = False
+            
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"{'刷新' if page_ready else '加载'}小红书网站 (第 {attempt + 1}/{max_retries} 次)")
+                    # 增加超时时间到 30 秒，并添加等待策略
+                    context_page.goto(
+                        "https://www.xiaohongshu.com", 
+                        timeout=30000,  # 30秒超时
+                        wait_until="domcontentloaded"  # 等待 DOM 加载完成即可
+                    )
+                    # 等待页面加载关键脚本
+                    context_page.wait_for_function(
+                        "typeof window._webmsxyw === 'function'",
+                        timeout=5000
+                    )
+                    logger.info("✅ 小红书网站访问成功")
+                    page_loaded = True
+                    page_ready = True
+                    last_page_load_time = current_time
+                    break
+                except Exception as e:
+                    logger.warning(f"第 {attempt + 1} 次访问失败: {e}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"等待 {retry_delay} 秒后重试...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # 指数退避
+                    else:
+                        logger.error(f"访问小红书网站失败，已重试 {max_retries} 次")
+                        page_ready = False
+                        return jsonify({
+                            'error': f'Failed to access xiaohongshu.com after {max_retries} retries: {str(e)}',
+                            'success': False,
+                            'hint': 'Network issue or blocked by anti-crawler. Please try again later.'
+                        }), 500
+            
+            if not page_loaded:
+                page_ready = False
+                return jsonify({
+                    'error': 'Failed to load xiaohongshu.com page',
+                    'success': False
+                }), 500
+        else:
+            logger.info("使用已加载的页面（缓存）")
         
         # 设置 Cookie（如果提供）
         if a1 or web_session:
@@ -197,19 +267,48 @@ def sign():
                 logger.info(f"已设置 Cookie: a1={bool(a1)}, web_session={bool(web_session)}")
                 time.sleep(0.5)
         
-        # 执行签名算法
-        try:
-            encrypt_params = context_page.evaluate(
-                "([url, data]) => window._webmsxyw(url, data)",
-                [uri, request_data]
-            )
-        except Exception as e:
-            logger.error(f"执行签名算法失败: {e}")
-            return jsonify({
-                'error': f'Failed to execute signature algorithm: {str(e)}',
-                'success': False,
-                'hint': 'Make sure the page has loaded properly'
-            }), 500
+        # 执行签名算法 - 如果失败，尝试刷新页面后重试
+        encrypt_params = None
+        for retry in range(2):  # 最多尝试2次
+            try:
+                encrypt_params = context_page.evaluate(
+                    "([url, data]) => window._webmsxyw(url, data)",
+                    [uri, request_data]
+                )
+                break  # 成功则跳出循环
+            except Exception as e:
+                logger.error(f"执行签名算法失败 (尝试 {retry + 1}/2): {e}")
+                if retry == 0:
+                    # 第一次失败，尝试刷新页面
+                    logger.info("正在刷新页面后重试...")
+                    try:
+                        context_page.goto(
+                            "https://www.xiaohongshu.com", 
+                            timeout=30000,
+                            wait_until="domcontentloaded"
+                        )
+                        context_page.wait_for_function(
+                            "typeof window._webmsxyw === 'function'",
+                            timeout=5000
+                        )
+                        page_ready = True
+                        last_page_load_time = time.time()
+                        logger.info("页面刷新成功，继续重试签名")
+                    except Exception as refresh_error:
+                        logger.error(f"页面刷新失败: {refresh_error}")
+                        page_ready = False
+                        return jsonify({
+                            'error': f'Failed to refresh page: {str(refresh_error)}',
+                            'success': False
+                        }), 500
+                else:
+                    # 第二次失败，返回错误
+                    page_ready = False
+                    return jsonify({
+                        'error': f'Failed to execute signature algorithm: {str(e)}',
+                        'success': False,
+                        'hint': 'Signature function not available. Please try again later.'
+                    }), 500
         
         # 提取签名结果
         if not encrypt_params:
