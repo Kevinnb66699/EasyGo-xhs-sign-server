@@ -202,65 +202,22 @@ def generate_sign(uri, data, a1, web_session, web_id=None):
     生成签名（参考官方 basic_usage.py 实现）
     参考：https://github.com/ReaJason/xhs/blob/master/example/basic_usage.py
     
-    支持两种模式：
-    1. 共享 a1 模式：所有请求使用相同的 a1（官方推荐）
-    2. 用户 Cookie 模式：每个用户使用自己的 cookie（更灵活）
+    重要发现：
+    1. 官方签名函数不使用 a1/web_session 参数，签名只依赖 uri 和 data
+    2. 官方建议：签名服务使用固定的 Cookie，不要频繁切换
+    3. 频繁更新浏览器 Cookie 和 reload 会触发小红书的风控机制
     
-    关键改进（基于官方示例）：
-    - 添加重试机制（最多10次）
-    - 确保 cookie 设置后有足够的等待时间
-    - 捕获 window._webmsxyw is not a function 等常见错误
-    - 支持设置 webId（小红书必需的三个字段之一）
+    因此采用新策略：
+    - 签名服务器启动时设置一次 Cookie（使用浏览器自带的 a1）
+    - 不再每次请求都更新 Cookie
+    - 用户请求时带上完整 Cookie 即可
     """
     global browser_context, context_page, global_a1
     
     # 重试最多 10 次（参考官方实现）
     for attempt in range(10):
         try:
-            # 如果提供了用户的 cookie，更新浏览器 cookie
-            cookies_updated = False
-            
-            if a1 and a1 != global_a1:
-                logger.info(f"[尝试 {attempt + 1}/10] 检测到用户 a1，更新 cookie")
-                
-                # 准备要更新的 cookies
-                cookies_to_add = [
-                    {'name': 'a1', 'value': a1, 'domain': ".xiaohongshu.com", 'path': "/"}
-                ]
-                
-                # 如果提供了 web_session，也一起更新
-                if web_session:
-                    cookies_to_add.append({
-                        'name': 'web_session', 
-                        'value': web_session, 
-                        'domain': ".xiaohongshu.com", 
-                        'path': "/"
-                    })
-                    logger.info(f"[尝试 {attempt + 1}/10] 同时更新 web_session")
-                
-                # 如果提供了 webId，也一起更新（重要！）
-                if web_id:
-                    cookies_to_add.append({
-                        'name': 'webId', 
-                        'value': web_id, 
-                        'domain': ".xiaohongshu.com", 
-                        'path': "/"
-                    })
-                    logger.info(f"[尝试 {attempt + 1}/10] 同时更新 webId")
-                
-                # 更新 cookies
-                browser_context.add_cookies(cookies_to_add)
-                context_page.reload()
-                
-                # 关键：这儿不 sleep 一下签名获取就失败了（官方注释）
-                # 如果经常失败请设置长一点试试
-                time.sleep(1)
-                
-                global_a1 = a1
-                cookies_updated = True
-                logger.info(f"[尝试 {attempt + 1}/10] ✅ 用户 cookie 已更新")
-            
-            # 执行签名函数
+            # 执行签名函数（关键：不再频繁切换 Cookie！）
             logger.info(f"[尝试 {attempt + 1}/10] 执行签名 - URI: {uri}")
             encrypt_params = context_page.evaluate(
                 "([url, data]) => window._webmsxyw(url, data)",
@@ -344,15 +301,15 @@ def sign():
                 'success': False
             }), 400
         
-        # 记录请求信息（隐藏敏感信息）
+        # 记录请求信息
         logger.info(f"收到签名请求:")
         logger.info(f"  - URI: {uri}")
         logger.info(f"  - 有 data: {bool(data)}")
-        logger.info(f"  - 有 a1: {bool(a1)} ({a1[:10]}...)" if a1 else "  - 有 a1: False")
-        logger.info(f"  - 有 web_session: {bool(web_session)}")
-        logger.info(f"  - 有 web_id: {bool(web_id)}")
         
-        # 生成签名（带重试机制，传递完整的 cookie 信息）
+        # 注意：根据官方实现，签名只依赖 uri 和 data
+        # a1/web_session/web_id 不参与签名计算，只是请求时需要的 Cookie
+        
+        # 生成签名（不需要传递 Cookie 参数）
         result = generate_sign(uri, data, a1, web_session, web_id)
         
         logger.info(f"✅ 签名请求处理成功")
