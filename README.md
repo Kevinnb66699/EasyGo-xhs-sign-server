@@ -41,11 +41,16 @@ pip install -r requirements.txt
 playwright install chromium
 playwright install-deps chromium  # Linux 需要
 
-# 3. 启动服务
+# 3. 下载反检测脚本（重要！）
+python download_stealth.py
+
+# 4. 启动服务
 python server.py
 ```
 
 服务将在 `http://localhost:5005` 启动。
+
+**注意**：如果 `download_stealth.py` 下载失败，请查看 [STEALTH_JS_SETUP.md](./STEALTH_JS_SETUP.md) 获取手动下载方法。
 
 ### 方式 2：使用 Docker
 
@@ -223,16 +228,26 @@ print(f"x-t: {signs['x-t']}")
 
 ## 🔧 故障排查
 
-### 问题 1：`window._webmsxyw is not a function`
+### 问题 1：下载 stealth.min.js 时出现 "maximum recursion depth exceeded"
+
+**原因**：gevent 的 monkey patch 与 requests 库冲突（已修复）
+
+**解决方案**：
+1. ✅ 已修复：确保 `monkey.patch_all()` 在所有导入之前执行
+2. 或使用独立下载脚本：`python download_stealth.py`
+3. 或手动下载，查看 [STEALTH_JS_SETUP.md](./STEALTH_JS_SETUP.md)
+
+### 问题 2：`window._webmsxyw is not a function`
 
 **原因**：页面未完全加载或反检测脚本未生效
 
 **解决方案**：
 - 服务会自动重试（最多 10 次）
-- 检查 `stealth.min.js` 是否正确下载
+- 检查 `stealth.min.js` 是否正确下载：`ls -lh stealth.min.js`
+- 确保文件大小 > 10KB
 - 查看服务日志排查问题
 
-### 问题 2：签名一直失败
+### 问题 3：签名一直失败
 
 **原因**：Cookie 不匹配或已过期
 
@@ -241,7 +256,7 @@ print(f"x-t: {signs['x-t']}")
 2. 重新获取最新的 Cookie
 3. 检查 Cookie 是否包含特殊字符需要转义
 
-### 问题 3：内存不足
+### 问题 4：内存不足
 
 **原因**：Chromium 占用内存较大
 

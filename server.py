@@ -4,16 +4,17 @@
 基于官方 xhs 库的实现：https://github.com/ReaJason/xhs
 """
 
+# 重要：gevent monkey patch 必须在所有导入之前执行
+from gevent import monkey
+monkey.patch_all()
+
 from flask import Flask, request, jsonify
 from playwright.sync_api import sync_playwright
-from gevent import monkey, pywsgi
+from gevent import pywsgi
 import os
 import time
 import logging
 import requests
-
-# 重要：gevent monkey patch，提高并发性能
-monkey.patch_all()
 
 # 配置日志
 logging.basicConfig(
@@ -39,20 +40,42 @@ def download_stealth_js():
         logger.info(f"✅ stealth.min.js 已存在")
         return stealth_js_path
     
-    try:
-        logger.info("正在下载 stealth.min.js...")
-        stealth_js_url = "https://cdn.jsdelivr.net/gh/requireCool/stealth.min.js/stealth.min.js"
-        response = requests.get(stealth_js_url, timeout=30)
-        response.raise_for_status()
-        
-        with open(stealth_js_path, 'w', encoding='utf-8') as f:
-            f.write(response.text)
-        
-        logger.info("✅ stealth.min.js 下载成功")
-        return stealth_js_path
-    except Exception as e:
-        logger.error(f"❌ stealth.min.js 下载失败: {e}")
-        return None
+    # 多个备用下载源
+    cdn_urls = [
+        "https://cdn.jsdelivr.net/gh/requireCool/stealth.min.js/stealth.min.js",
+        "https://fastly.jsdelivr.net/gh/requireCool/stealth.min.js/stealth.min.js",
+        "https://raw.githubusercontent.com/requireCool/stealth.min.js/main/stealth.min.js",
+    ]
+    
+    for idx, url in enumerate(cdn_urls):
+        try:
+            logger.info(f"正在从源 {idx + 1}/{len(cdn_urls)} 下载 stealth.min.js...")
+            logger.info(f"URL: {url}")
+            
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            
+            # 验证下载内容
+            if len(response.text) < 100:
+                logger.warning(f"下载的文件太小，可能不是有效的脚本: {len(response.text)} bytes")
+                continue
+            
+            with open(stealth_js_path, 'w', encoding='utf-8') as f:
+                f.write(response.text)
+            
+            logger.info(f"✅ stealth.min.js 下载成功 ({len(response.text)} bytes)")
+            return stealth_js_path
+            
+        except Exception as e:
+            logger.warning(f"从源 {idx + 1} 下载失败: {e}")
+            if idx < len(cdn_urls) - 1:
+                logger.info(f"尝试下一个下载源...")
+            continue
+    
+    logger.error(f"❌ 所有下载源都失败了")
+    logger.warning(f"💡 提示: 您可以手动下载 stealth.min.js 文件到当前目录")
+    logger.warning(f"   下载地址: https://github.com/requireCool/stealth.min.js")
+    return None
 
 
 def init_browser():
