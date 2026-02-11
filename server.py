@@ -197,7 +197,7 @@ def get_a1():
     """获取当前浏览器的 a1 值"""
     return jsonify({'a1': global_a1})
 
-def generate_sign(uri, data, a1, web_session):
+def generate_sign(uri, data, a1, web_session, web_id=None):
     """
     生成签名（参考官方 basic_usage.py 实现）
     参考：https://github.com/ReaJason/xhs/blob/master/example/basic_usage.py
@@ -210,6 +210,7 @@ def generate_sign(uri, data, a1, web_session):
     - 添加重试机制（最多10次）
     - 确保 cookie 设置后有足够的等待时间
     - 捕获 window._webmsxyw is not a function 等常见错误
+    - 支持设置 webId（小红书必需的三个字段之一）
     """
     global browser_context, context_page, global_a1
     
@@ -236,6 +237,16 @@ def generate_sign(uri, data, a1, web_session):
                         'path': "/"
                     })
                     logger.info(f"[尝试 {attempt + 1}/10] 同时更新 web_session")
+                
+                # 如果提供了 webId，也一起更新（重要！）
+                if web_id:
+                    cookies_to_add.append({
+                        'name': 'webId', 
+                        'value': web_id, 
+                        'domain': ".xiaohongshu.com", 
+                        'path': "/"
+                    })
+                    logger.info(f"[尝试 {attempt + 1}/10] 同时更新 webId")
                 
                 # 更新 cookies
                 browser_context.add_cookies(cookies_to_add)
@@ -295,7 +306,8 @@ def sign():
         "uri": "/api/sns/web/v2/note",
         "data": {...},  // 可选，请求数据
         "a1": "cookie_a1_value",  // 必需，来自 cookie
-        "web_session": "cookie_web_session_value"  // 可选
+        "web_session": "cookie_web_session_value",  // 必需，来自 cookie
+        "web_id": "cookie_webId_value"  // 必需，浏览器指纹标识
     }
     
     返回：
@@ -304,7 +316,9 @@ def sign():
         "x-t": "时间戳字符串"
     }
     
-    注意：即便做了重试，还是有可能会遇到签名失败的情况，客户端应该重试
+    注意：
+    1. 即便做了重试，还是有可能会遇到签名失败的情况，客户端应该重试
+    2. 必须传递完整的 a1、web_session、web_id，确保与请求 Cookie 一致，避免触发验证码
     """
     try:
         # 获取请求数据
@@ -320,6 +334,7 @@ def sign():
         data = json_data.get('data')
         a1 = json_data.get('a1', '')
         web_session = json_data.get('web_session', '')
+        web_id = json_data.get('web_id', '')  # 添加 webId 支持
         
         # 验证必需参数
         if not uri:
@@ -335,9 +350,10 @@ def sign():
         logger.info(f"  - 有 data: {bool(data)}")
         logger.info(f"  - 有 a1: {bool(a1)} ({a1[:10]}...)" if a1 else "  - 有 a1: False")
         logger.info(f"  - 有 web_session: {bool(web_session)}")
+        logger.info(f"  - 有 web_id: {bool(web_id)}")
         
-        # 生成签名（带重试机制）
-        result = generate_sign(uri, data, a1, web_session)
+        # 生成签名（带重试机制，传递完整的 cookie 信息）
+        result = generate_sign(uri, data, a1, web_session, web_id)
         
         logger.info(f"✅ 签名请求处理成功")
         return jsonify(result)
